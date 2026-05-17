@@ -1,0 +1,8 @@
+{
+  "name": "ProspectPilot",
+  "description": "Full-stack agency tool for local US lead scraping, AI website audits, and personalized cold email generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
