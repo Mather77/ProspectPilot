@@ -13,6 +13,17 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", environment: process.env.NODE_ENV || 'development' });
+});
+
 const gemini = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY || "",
   httpOptions: {
@@ -98,141 +109,98 @@ async function getLeads(place_id: string, lat: number, lon: number, category: st
   }
 }
 
-// 3. Email scraper
-async function extractEmails(website: string) {
-  const emails = new Set<string>();
+// 3. Simplified robust scraper
+async function scrapeLeadData(website: string) {
   const visited = new Set<string>();
-  const priorityPaths = ['/contact', '/contact-us', '/locations', '/location', '/team', '/about', '/about-us'];
+  const priorityPaths = ['/contact', '/contact-us', '/about', '/about-us'];
   const baseDomain = new URL(website).origin;
+  let combinedText = "";
 
-  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-
-  async function scrapePage(url: string) {
-    if (visited.has(url) || visited.size > 8) return;
+  async function fetchPage(url: string) {
+    if (visited.has(url) || visited.size > 3) return; // Limit depth to 3 priority pages
     visited.add(url);
-
     try {
+      console.log(`[Scraper] Fetching: ${url}`);
       const res = await axios.get(url, { 
-        timeout: 5000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' },
+        timeout: 8000,
+        headers: { 
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        },
         validateStatus: (s) => s < 500 
       });
       if (res.status !== 200) return;
-
       const $ = cheerio.load(res.data);
-      const html = $('body').html() || '';
-      const matches = html.match(emailRegex);
-      
-      if (matches) {
-        matches.forEach(email => {
-          const lower = email.toLowerCase();
-          if (JUNK_EMAILS.some(j => lower.includes(j))) return;
-          if (IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext))) return;
-          emails.add(lower);
-        });
-      }
-
-      // Also look for links to priority paths if we are on homepage
-      if (url === website) {
-        $('a[href]').each((_, el) => {
-          const href = $(el).attr('href');
-          if (!href) return;
-          try {
-            const absoluteUrl = new URL(href, baseDomain).href;
-            if (absoluteUrl.startsWith(baseDomain) && priorityPaths.some(path => absoluteUrl.includes(path))) {
-              // Priority fetch later
-            }
-          } catch {}
-        });
-      }
-    } catch (e) {
-      console.error(`Error scraping ${url}:`, (e as Error).message);
+      $('script, style, nav, footer, iframe').remove();
+      const text = $('body').text().replace(/\s+/g, ' ').trim();
+      combinedText += `\n--- Page: ${url} ---\n${text.substring(0, 5000)}`;
+    } catch (e: any) {
+      console.warn(`[Scraper] Failed ${url}: ${e.message}`);
     }
   }
 
-  // Scrape homepage first
-  await scrapePage(website);
-  
-  // Try priority paths
+  await fetchPage(website);
   for (const path of priorityPaths) {
-    if (emails.size > 2) break;
-    await scrapePage(new URL(path, website).href);
+    if (combinedText.length > 15000) break;
+    try {
+      await fetchPage(new URL(path, website).href);
+    } catch {}
   }
-
-  const sortedEmails = Array.from(emails).sort((a, b) => scoreEmail(b) - scoreEmail(a));
-  return sortedEmails;
+  return combinedText;
 }
 
-// 4. Gemini Audit & Copywriting
-async function auditLead(website: string, businessName: string, screenshotUrl: string) {
+// 4. Combined Gemini Enrichment
+async function enrichLead(website: string, businessName: string) {
   try {
-    // Audit with Vision
-    const imageRes = await axios.get(screenshotUrl, { responseType: 'arraybuffer' });
-    const imageBase64 = Buffer.from(imageRes.data).toString('base64');
+    const screenshotUrl = `https://api.microlink.io/?url=${encodeURIComponent(website)}&screenshot=true&embed=screenshot.url`;
+    const pageText = await scrapeLeadData(website);
 
-    const auditPrompt = `
-      You are a specialized Web Audit Expert for a marketing agency.
-      Look at this screenshot of ${businessName}'s website (${website}).
+    const prompt = `
+      You are a Sales Intelligence AI. 
+      Analyze this business data for ${businessName} (${website}).
       
-      Tasks:
-      1. Give an Audit Score (0-100) based on conversion optimization, design modernness, and mobile focus.
-      2. Identify ONE specific "Gap" (e.g., poor hero section, missing CTA, slow-looking layout).
-      3. Identify ONE "Insight" (How this gap hurts their specific business niche).
+      DATA FROM WEBSITE:
+      ${pageText.substring(0, 10000)}
       
-      Return JSON:
+      TASKS:
+      1. AUDIT: Score 0-100, identify ONE "Gap" (technical/design) and ONE "Insight" (business impact).
+      2. EMAILS: Extract any legitimate business emails found in the text.
+      3. COLD EMAIL: Write a short, high-conversion cold email. 
+         Framework: Observation -> Gap -> Impact -> Offer Video Audit. 
+         Rules: No flattery, subject is 2-4 words lowercase.
+      
+      OUTPUT JSON ONLY:
       {
-        "score": number,
-        "gap": string,
-        "insight": string,
-        "findings": string[]
+        "audit": {
+          "score": number,
+          "gap": "string",
+          "insight": "string",
+          "findings": ["string"]
+        },
+        "emails": ["string"],
+        "email": {
+          "subject": "string",
+          "body": "string"
+        }
       }
     `;
 
-    const auditResponse = await gemini.models.generateContent({
+    console.log(`[Gemini] Processing enrichment for ${businessName}`);
+    const response = await gemini.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: [
-        { text: auditPrompt },
-        { inlineData: { mimeType: "image/png", data: imageBase64 } }
-      ],
+      contents: [{ text: prompt }],
       config: { responseMimeType: "application/json" }
     });
 
-    const auditData = JSON.parse(auditResponse.text || '{}');
+    const result = JSON.parse(response.text || '{}');
+    return { ...result, screenshotUrl };
 
-    // Drafting Cold Email
-    const emailPrompt = `
-      Write a hyper-personalized cold email for ${businessName}.
-      Context: ${auditData.gap}. Insight: ${auditData.insight}.
-      
-      Framework: "Observation -> Insight -> Gap".
-      Rules:
-      - NO flattery.
-      - NO "I hope you're well".
-      - NO "I noticed your website".
-      - Subject: 2-4 words, lowercase, very specific (e.g., "your hero section layout").
-      - Body: "I was looking at your site and the [Specific Detail] is [Problem]. Usually, this makes it harder for customers to [Action]. I recorded a 2-min video on how to fix this. Worth a look?"
-      - Signature: Animesh, ProspectPilot
-      
-      Return JSON:
-      {
-        "subject": string,
-        "body": string
-      }
-    `;
-
-    const emailResponse = await gemini.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: emailPrompt,
-      config: { responseMimeType: "application/json" }
-    });
-
-    const emailData = JSON.parse(emailResponse.text || '{}');
-
-    return { audit: auditData, email: emailData };
-
-  } catch (e) {
-    console.error('Gemini Audit Error:', e);
-    return null;
+  } catch (e: any) {
+    if (e.message?.includes('RESOURCE_EXHAUSTED')) {
+      throw new Error("AI_QUOTA_EXCEEDED");
+    }
+    console.error('[Enrichment Error]', e.message);
+    throw e;
   }
 }
 
@@ -242,39 +210,30 @@ app.post("/api/leads/search", async (req, res) => {
   try {
     const location = await getPlaceId(city, state);
     if (!location) {
-      return res.status(404).json({ error: `Location "${city}, ${state}" could not be geocoded by Geoapify. Check if the city name is correct.` });
+      return res.status(404).json({ error: `Location "${city}, ${state}" could not be geocoded by Geoapify.` });
     }
 
     const { place_id, lat, lon } = location.properties;
     const leads = await getLeads(place_id, lat, lon, nicheCategory);
-    
-    if (leads.length === 0) {
-      console.warn(`[API] Zero leads found for ${nicheCategory} in ${city}`);
-    }
-
     res.json({ leads });
   } catch (e: any) {
     console.error('[Search Route Error]', e);
-    const status = e.response?.status || 500;
-    const message = e.response?.data?.message || e.message;
-    res.status(status).json({ error: `Geoapify Error: ${message}` });
+    res.status(500).json({ error: e.message });
   }
 });
 
 app.post("/api/leads/enrich", async (req, res) => {
   const { website, name } = req.body;
+  if (!website) return res.status(400).json({ error: "Website required" });
+  
   try {
-    const screenshotUrl = `https://api.microlink.io/?url=${encodeURIComponent(website)}&screenshot=true&embed=screenshot.url`;
-    
-    // Run enrichment in parallel
-    const [emails, auditResult] = await Promise.all([
-      extractEmails(website),
-      auditLead(website, name, screenshotUrl)
-    ]);
-
-    res.json({ emails, auditResult, screenshotUrl });
-  } catch (e) {
-    res.status(500).json({ error: (e as Error).message });
+    const result = await enrichLead(website, name);
+    res.json(result);
+  } catch (e: any) {
+    if (e.message === "AI_QUOTA_EXCEEDED") {
+      return res.status(429).json({ error: "Daily AI request limit reached. Please try again tomorrow or upgrade your API key." });
+    }
+    res.status(500).json({ error: e.message });
   }
 });
 

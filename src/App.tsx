@@ -30,7 +30,16 @@ interface Lead {
 
 interface Enrichment {
   emails: string[];
-  auditResult: any;
+  audit: {
+    score: number;
+    gap: string;
+    insight: string;
+    findings: string[];
+  };
+  email: {
+    subject: string;
+    body: string;
+  };
   screenshotUrl: string;
 }
 
@@ -118,8 +127,13 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setEnrichments(prev => ({ ...prev, [lead.place_id]: data }));
+        } else if (res.status === 429) {
+          const data = await res.json();
+          setError(data.error || "Quota reached. Pausing automation.");
+          setProcessingIdx(null);
+          return; // Stop processing further leads
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error(`[Enrich Error] Lead ${lead.name}:`, e);
       }
     }
@@ -324,7 +338,7 @@ function LeadCard({ lead, enrichment, isProcessing, index }: any) {
     }
   }, [manualEmail, enrichment]);
 
-  const auditScore = enrichment?.auditResult?.audit?.score || 0;
+  const auditScore = enrichment?.audit?.score || 0;
   const scoreStyles = auditScore > 75 ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]' : 
                       auditScore > 50 ? 'text-amber-400 bg-amber-400/10 border-amber-400/20' : 
                       'text-rose-400 bg-rose-400/10 border-rose-400/20';
@@ -384,9 +398,9 @@ function LeadCard({ lead, enrichment, isProcessing, index }: any) {
             <p className="text-[9px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1.5">
               <Eye className="w-3 h-3 text-indigo-400" /> AI Audit Insight
             </p>
-            {enrichment?.auditResult?.audit ? (
+            {enrichment?.audit ? (
               <p className="text-xs text-slate-300 leading-relaxed line-clamp-2 md:line-clamp-3 font-medium">
-                {enrichment.auditResult.audit.gap}. {enrichment.auditResult.audit.insight}
+                {enrichment.audit.gap}. {enrichment.audit.insight}
               </p>
             ) : (
               <div className="space-y-2 py-1">
@@ -399,9 +413,9 @@ function LeadCard({ lead, enrichment, isProcessing, index }: any) {
             <p className="text-[9px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1.5">
               <Mail className="w-3 h-3 text-indigo-400" /> Cold Draft Preview
             </p>
-            {enrichment?.auditResult?.email ? (
+            {enrichment?.email ? (
               <p className="text-xs italic text-slate-400 leading-relaxed line-clamp-2 md:line-clamp-3 font-medium">
-                "{enrichment.auditResult.email.body.substring(0, 120)}..."
+                "{enrichment.email.body.substring(0, 120)}..."
               </p>
             ) : (
               <div className="space-y-2 py-1">
