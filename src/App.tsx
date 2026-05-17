@@ -40,6 +40,7 @@ export default function App() {
   const [state, setState] = useState('NY');
   const [leads, setLeads] = useState<Lead[]>([]);
   const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [processingIdx, setProcessingIdx] = useState<number | null>(null);
   const [enrichments, setEnrichments] = useState<Record<string, Enrichment>>({});
 
@@ -53,6 +54,7 @@ export default function App() {
 
   const handleSearch = async () => {
     setSearching(true);
+    setError(null);
     setLeads([]);
     setEnrichments({});
     try {
@@ -65,12 +67,21 @@ export default function App() {
           nicheCategory: CATEGORY_MAP[niche]
         })
       });
+      
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || `Server error: ${res.status}`);
+      }
+
       const data = await res.json();
-      if (data.leads) {
+      if (data.leads && data.leads.length > 0) {
         setLeads(data.leads);
         processLeads(data.leads);
+      } else {
+        setError(`No leads found for ${niche} in ${city}. Try a different niche or larger city.`);
       }
-    } catch (e) {
+    } catch (e: any) {
+      setError(e.message);
       console.error(e);
     } finally {
       setSearching(false);
@@ -179,6 +190,17 @@ export default function App() {
               {searching ? 'Launching Scraper...' : 'Launch Scraper'}
             </button>
           </div>
+          {error && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 p-3 bg-rose-500/10 border border-rose-500/20 rounded-md flex items-center gap-2 text-rose-400 text-xs font-medium"
+            >
+              <Target className="w-3.5 h-3.5" />
+              {error}
+              <button onClick={() => setError(null)} className="ml-auto opacity-50 hover:opacity-100 italic">dismiss</button>
+            </motion.div>
+          )}
         </header>
 
         {/* Progress Tracker (Conditional) */}

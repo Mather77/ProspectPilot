@@ -243,14 +243,23 @@ app.post("/api/leads/search", async (req, res) => {
   const { city, state, nicheCategory } = req.body;
   try {
     const location = await getPlaceId(city, state);
-    if (!location) return res.status(404).json({ error: "Location not found" });
+    if (!location) {
+      return res.status(404).json({ error: `Location "${city}, ${state}" could not be geocoded by Geoapify. Check if the city name is correct.` });
+    }
 
     const { place_id, lat, lon } = location.properties;
     const leads = await getLeads(place_id, lat, lon, nicheCategory);
     
+    if (leads.length === 0) {
+      console.warn(`[API] Zero leads found for ${nicheCategory} in ${city}`);
+    }
+
     res.json({ leads });
-  } catch (e) {
-    res.status(500).json({ error: (e as Error).message });
+  } catch (e: any) {
+    console.error('[Search Route Error]', e);
+    const status = e.response?.status || 500;
+    const message = e.response?.data?.message || e.message;
+    res.status(status).json({ error: `Geoapify Error: ${message}` });
   }
 });
 
