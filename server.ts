@@ -46,19 +46,19 @@ async function getPlaceId(city: string, state: string, country: string = "USA") 
   }
   
   const url = `https://api.geoapify.com/v1/geocode/search?city=${encodeURIComponent(city)}&state=${encodeURIComponent(state)}&country=${encodeURIComponent(country)}&apiKey=${apiKey}`;
-  console.log(`[Geocoding] Searching for ${city}, ${state} using key: ${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`);
+  console.log(`[Geocoding] Searching for ${city}, ${state}`);
   try {
-    const response = await axios.get(url);
+    const response = await axios.get(url, { timeout: 10000 });
     if (!response.data.features || response.data.features.length === 0) {
       console.warn(`[Geocoding] No coordinates found for ${city}, ${state}`);
       return null;
     }
     const feature = response.data.features[0];
-    console.log(`[Geocoding] Found location: ${feature.properties.formatted} (Place ID: ${feature.properties.place_id})`);
+    console.log(`[Geocoding] Found location: ${feature.properties.formatted}`);
     return feature;
   } catch (err: any) {
     console.error(`[Geocoding] API Error:`, err.response?.data || err.message);
-    return null;
+    throw new Error(`Geocoding failed: ${err.response?.data?.message || err.message}`);
   }
 }
 
@@ -71,32 +71,30 @@ async function getLeads(place_id: string, lat: number, lon: number, category: st
   }
   
   // Strategy 1: Search by Place ID (Specific)
-  console.log(`[Places] Attempting search in place: ${place_id} for category: ${category}`);
-  // Increase limit to 50 to find more businesses with websites
-  let url = `https://api.geoapify.com/v2/places?categories=${category}&filter=place:${place_id}&limit=50&apiKey=${apiKey}`;
+  console.log(`[Places] Searching in ${place_id} for ${category}`);
+  const strategy1Url = `https://api.geoapify.com/v2/places?categories=${category}&filter=place:${place_id}&limit=50&apiKey=${apiKey}`;
+  const strategy2Url = `https://api.geoapify.com/v2/places?categories=${category}&filter=circle:${lon},${lat},15000&bias=proximity:${lon},${lat}&limit=50&apiKey=${apiKey}`;
   
   try {
-    let response = await axios.get(url);
+    let response = await axios.get(strategy1Url, { timeout: 10000 });
     let results = response.data.features || [];
     
-    // Strategy 2: Fallback to Radius (Broader) if no results or place_id failed
     if (results.length === 0) {
-      console.log(`[Places] Strategy 1 failed or 0 results. Falling back to 15km radius around ${lat}, ${lon}...`);
-      url = `https://api.geoapify.com/v2/places?categories=${category}&filter=circle:${lon},${lat},15000&bias=proximity:${lon},${lat}&limit=50&apiKey=${apiKey}`;
-      response = await axios.get(url);
+      console.log(`[Places] No results in Place ID bounds. Trying 15km radius...`);
+      response = await axios.get(strategy2Url, { timeout: 10000 });
       results = response.data.features || [];
     }
 
-    console.log(`[Places] Found ${results.length} raw business results from Geoapify.`);
+    console.log(`[Places] Found ${results.length} raw business results.`);
     const processed = results
       .map((f: any) => f.properties)
-      .filter((p: any) => p.website); // Be more lenient with website checks
+      .filter((p: any) => p.website); 
     
-    console.log(`[Places] ${processed.length} leads have website links to audit.`);
+    console.log(`[Places] ${processed.length} leads with websites found.`);
     return processed;
   } catch (err: any) {
     console.error(`[Places] API Error:`, err.response?.data || err.message);
-    return [];
+    throw new Error(`Lead search failed: ${err.response?.data?.message || err.message}`);
   }
 }
 

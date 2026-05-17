@@ -68,9 +68,25 @@ export default function App() {
         })
       });
       
+      const contentType = res.headers.get("content-type");
       if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || `Server error: ${res.status}`);
+        let errorMessage = `Server error: ${res.status}`;
+        if (contentType && contentType.includes("application/json")) {
+           try {
+             const errData = await res.json();
+             errorMessage = errData.error || errorMessage;
+           } catch {
+             errorMessage = "Server returned an error with invalid JSON.";
+           }
+        } else {
+           const text = await res.text();
+           errorMessage = text.slice(0, 100) || errorMessage;
+        }
+        throw new Error(errorMessage);
+      }
+
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Target server did not return JSON. The backend might be down or transitioning.");
       }
 
       const data = await res.json();
@@ -78,11 +94,11 @@ export default function App() {
         setLeads(data.leads);
         processLeads(data.leads);
       } else {
-        setError(`No leads found for ${niche} in ${city}. Try a different niche or larger city.`);
+        setError(`No leads found for ${niche} in ${city}. Try a broader niche or a larger US city.`);
       }
     } catch (e: any) {
       setError(e.message);
-      console.error(e);
+      console.error("[Search Error]", e);
     } finally {
       setSearching(false);
     }
@@ -98,10 +114,13 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ website: lead.website, name: lead.name })
         });
-        const data = await res.json();
-        setEnrichments(prev => ({ ...prev, [lead.place_id]: data }));
+        
+        if (res.ok) {
+          const data = await res.json();
+          setEnrichments(prev => ({ ...prev, [lead.place_id]: data }));
+        }
       } catch (e) {
-        console.error(e);
+        console.error(`[Enrich Error] Lead ${lead.name}:`, e);
       }
     }
     setProcessingIdx(null);
